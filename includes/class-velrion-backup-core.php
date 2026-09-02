@@ -128,14 +128,47 @@ class Velrion_Backup_Core {
 	}
 
 	/**
-	 * Ponechá jen self::KEEP_BACKUPS nejnovějších záloh, zbytek smaže.
+	 * Ponechá jen $keep nejnovějších záloh, zbytek smaže.
+	 *
+	 * @param string   $backup_dir Adresář se zálohami.
+	 * @param int|null $keep       Kolik nejnovějších ponechat (výchozí self::KEEP_BACKUPS).
 	 */
-	private static function prune_old_backups( $backup_dir ) {
+	private static function prune_old_backups( $backup_dir, $keep = null ) {
+		$keep    = null === $keep ? self::KEEP_BACKUPS : max( 0, (int) $keep );
 		$backups = self::find_existing_backups( $backup_dir );
 
-		foreach ( array_slice( $backups, self::KEEP_BACKUPS ) as $old ) {
+		foreach ( array_slice( $backups, $keep ) as $old ) {
 			@unlink( $old['path'] );
 		}
+	}
+
+	/**
+	 * Odhadne, jestli je na disku místo pro další archiv - podle velikosti té nejnovější
+	 * existující zálohy. Bez téhle kontroly se nedostatek místa projeví až selháním zápisu
+	 * po několika minutách stavby archivu.
+	 *
+	 * @throws Exception Když volného místa zjevně nestačí.
+	 */
+	private static function assert_enough_space( $backup_dir ) {
+		$backups = self::find_existing_backups( $backup_dir );
+		if ( ! $backups ) {
+			return; // První běh - není podle čeho odhadovat.
+		}
+
+		$needed = $backups[0]['size'];
+		$free   = @disk_free_space( $backup_dir );
+
+		if ( false === $free || $free >= $needed ) {
+			return;
+		}
+
+		throw new Exception(
+			sprintf(
+				'Na disku není dost místa pro novou zálohu: volno %s, poslední záloha má %s.',
+				size_format( $free ),
+				size_format( $needed )
+			)
+		);
 	}
 
 	/**
@@ -162,9 +195,15 @@ class Velrion_Backup_Core {
 		try {
 			$backup_dir = self::prepare_backup_dir( $settings['backup_dir'] );
 
+			// Nejstarší slot uvolníme JEŠTĚ PŘED stavbou nového archivu. Zálohy mají stovky MB
+			// a při pořadí "napřed nový, pak úklid" musí být na disku místo pro KEEP_BACKUPS + 1
+			// archivů zároveň; na běžném hostingu to došlo a zápis ZIPu tiše selhal. Nejnovější
+			// záloha zůstává nedotčená, takže i když tenhle běh selže, pořád je z čeho obnovit.
+			self::prune_old_backups( $backup_dir, self::KEEP_BACKUPS - 1 );
+			self::assert_enough_space( $backup_dir );
+
 			// Každý běh zakládá nový soubor s časovým razítkem (včetně hodin/minut/sekund),
-			// takže se nikdy nepřepíše poslední záloha - o uvolnění místa se postará
-			// prune_old_backups(), které smaže tu nejstarší.
+			// takže se nikdy nepřepíše poslední záloha.
 			$stamp    = current_time( 'Y-m-d-His' );
 			$zip_path = trailingslashit( $backup_dir ) . self::FILE_PREFIX . $stamp . self::FILE_SUFFIX;
 			$sql_tmp  = trailingslashit( $backup_dir ) . 'database.sql';
@@ -179,11 +218,18 @@ class Velrion_Backup_Core {
 			if ( file_exists( $zip_path ) ) {
 				@unlink( $zip_path );
 			}
-			rename( $zip_tmp, $zip_path );
+			if ( ! rename( $zip_tmp, $zip_path ) ) {
+				throw new Exception( 'Hotový archiv se nepodařilo přesunout na místo: ' . $zip_path );
+			}
 
 			self::prune_old_backups( $backup_dir );
 
+			// Bez téhle kontroly by se běh, ve kterém archiv nevznikl, zapsal jako úspěšný
+			// s nulovou velikostí - admin pak hlásil "OK" a žádný nový soubor v seznamu.
 			$size = file_exists( $zip_path ) ? filesize( $zip_path ) : 0;
+			if ( ! $size ) {
+				throw new Exception( 'Záloha skončila bez použitelného archivu: ' . basename( $zip_path ) );
+			}
 
 			self::set_state(
 				array_merge(
@@ -560,6 +606,15 @@ class Velrion_Backup_Core {
 			}
 		}
 
-		$zip->close();
+		// ZipArchive zapisuje obsah archivu až při close(). Když zápis selže (nejčastěji plný
+		// disk nebo kvóta), close() jen vrátí false a vyhodí warning - bez téhle kontroly se
+		// build_zip() vrátí jako by bylo hotovo a soubor přitom vůbec nevznikne.
+		if ( ! $zip->close() ) {
+			throw new Exception( 'Zápis ZIP archivu selhal (typicky nedostatek místa na disku): ' . $zip_path );
+		}
+
+		if ( ! file_exists( $zip_path ) || ! filesize( $zip_path ) ) {
+			throw new Exception( 'ZIP archiv se nepodařilo vytvořit: ' . $zip_path );
+		}
 	}
 }
