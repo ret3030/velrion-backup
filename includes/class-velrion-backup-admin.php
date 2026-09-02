@@ -66,9 +66,9 @@ class Velrion_Backup_Admin {
 		}
 		check_admin_referer( 'velrion_backup_run_now' );
 
-		Velrion_Backup_Core::run();
+		$result = Velrion_Backup_Core::run();
 
-		wp_safe_redirect( add_query_arg( array( 'page' => self::SLUG, 'ran' => 1 ), admin_url( 'options-general.php' ) ) );
+		wp_safe_redirect( add_query_arg( array( 'page' => self::SLUG, 'ran' => $result ), admin_url( 'options-general.php' ) ) );
 		exit;
 	}
 
@@ -182,12 +182,17 @@ class Velrion_Backup_Admin {
 				<div class="notice notice-success"><p>Nastavení uloženo.</p></div>
 			<?php endif; ?>
 			<?php if ( isset( $_GET['ran'] ) ) : ?>
-				<div class="notice notice-<?php echo $state['status'] === 'success' ? 'success' : 'error'; ?>">
+				<?php $ran = sanitize_key( wp_unslash( $_GET['ran'] ) ); ?>
+				<div class="notice notice-<?php echo $ran === 'success' ? 'success' : ( $ran === 'locked' ? 'warning' : 'error' ); ?>">
 					<p>
 						<?php
-						echo $state['status'] === 'success'
-							? 'Záloha proběhla úspěšně.'
-							: 'Záloha selhala: ' . esc_html( $state['message'] );
+						if ( $ran === 'success' ) {
+							echo 'Záloha proběhla úspěšně.';
+						} elseif ( $ran === 'locked' ) {
+							echo 'Právě probíhá jiná záloha nebo obnova, nová záloha se nespustila. Zkuste to prosím za chvíli znovu.';
+						} else {
+							echo 'Záloha selhala: ' . esc_html( $state['message'] );
+						}
 						?>
 					</p>
 				</div>
@@ -257,7 +262,7 @@ class Velrion_Backup_Admin {
 			</p>
 
 			<h2>Uložené zálohy a obnova</h2>
-			<p class="description">Soubory jsou pojmenované podle data pořízení. Uchovávají se 2 nejnovější, starší se automaticky mažou.</p>
+			<p class="description">Soubory jsou pojmenované podle data a času pořízení. Uchovávají se 2 nejnovější, starší se automaticky mažou.</p>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('Opravdu obnovit vybranou zálohu? Přepíše to aktuální databázi a soubory pluginů/šablon tohoto webu.');">
 				<?php wp_nonce_field( 'velrion_backup_restore_local' ); ?>
 				<input type="hidden" name="action" value="velrion_backup_restore_local">

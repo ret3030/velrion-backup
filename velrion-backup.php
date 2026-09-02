@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Velrion Backup
- * Description: Automatická týdenní záloha databáze a wp-content (bez uploads) mimo web-root. Udržuje 2 zálohy pojmenované podle data, umí je i obnovit - lokálně nebo ze staženého ZIPu z jiného webu.
- * Version: 1.1.0
+ * Description: Automatická týdenní záloha databáze a wp-content (bez uploads) mimo web-root. Udržuje 2 zálohy pojmenované podle data a času, každý běh přepíše tu nejstarší, umí je i obnovit - lokálně nebo ze staženého ZIPu z jiného webu.
+ * Version: 1.1.1
  * Author: Velrion Solutions
  * Author URI: https://velrionsolutions.com
  * Plugin URI: https://velrionsolutions.com
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'VELRION_BACKUP_VERSION', '1.1.0' );
+define( 'VELRION_BACKUP_VERSION', '1.1.1' );
 define( 'VELRION_BACKUP_FILE', __FILE__ );
 define( 'VELRION_BACKUP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VELRION_BACKUP_OPTION', 'velrion_backup_settings' );
