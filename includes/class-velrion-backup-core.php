@@ -5,7 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /**
  * Hlavní logika zálohování a obnovy: DB dump/import + zip/rozbalení wp-content (bez uploads).
- * Zálohy jsou pojmenované podle data pořízení, udržují se 2 nejnovější, starší se mažou.
+ * Zálohy jsou pojmenované podle data a času pořízení, udržují se 2 nejnovější,
+ * každý běh tedy přepíše (smaže) tu nejstarší.
  */
 class Velrion_Backup_Core {
 
@@ -15,9 +16,15 @@ class Velrion_Backup_Core {
 	/** Kolik posledních záloh se má uchovávat. */
 	const KEEP_BACKUPS = 2;
 
-	/** Předpona a přípona souboru zálohy, mezi nimi je datum ve formátu Y-m-d. */
+	/** Předpona a přípona souboru zálohy, mezi nimi je časové razítko ve formátu Y-m-d-His. */
 	const FILE_PREFIX = 'velrion-backup-';
 	const FILE_SUFFIX = '.zip';
+
+	/**
+	 * Regulární výraz časového razítka v názvu zálohy. Povoluje i starší formát bez času
+	 * (Y-m-d), aby zůstaly obnovitelné zálohy vytvořené předchozími verzemi pluginu.
+	 */
+	const FILE_STAMP_PATTERN = '\\d{4}-\\d{2}-\\d{2}(?:-\\d{6})?';
 
 	public static function get_settings() {
 		$defaults = array(
@@ -133,10 +140,12 @@ class Velrion_Backup_Core {
 
 	/**
 	 * Spustí zálohování. Volá se z cronu i z ručního tlačítka.
+	 *
+	 * @return string 'success' | 'error' | 'locked' (jiný běh právě probíhá, nic se nedělo).
 	 */
 	public static function run() {
 		if ( get_transient( VELRION_BACKUP_LOCK_KEY ) ) {
-			return;
+			return 'locked';
 		}
 		set_transient( VELRION_BACKUP_LOCK_KEY, 1, 15 * MINUTE_IN_SECONDS );
 
@@ -147,12 +156,17 @@ class Velrion_Backup_Core {
 
 		$settings = self::get_settings();
 		$started  = microtime( true );
+		$sql_tmp  = '';
+		$zip_tmp  = '';
 
 		try {
 			$backup_dir = self::prepare_backup_dir( $settings['backup_dir'] );
 
-			$date_str = current_time( 'Y-m-d' );
-			$zip_path = trailingslashit( $backup_dir ) . self::FILE_PREFIX . $date_str . self::FILE_SUFFIX;
+			// Každý běh zakládá nový soubor s časovým razítkem (včetně hodin/minut/sekund),
+			// takže se nikdy nepřepíše poslední záloha - o uvolnění místa se postará
+			// prune_old_backups(), které smaže tu nejstarší.
+			$stamp    = current_time( 'Y-m-d-His' );
+			$zip_path = trailingslashit( $backup_dir ) . self::FILE_PREFIX . $stamp . self::FILE_SUFFIX;
 			$sql_tmp  = trailingslashit( $backup_dir ) . 'database.sql';
 			$zip_tmp  = $zip_path . '.tmp';
 
@@ -161,7 +175,7 @@ class Velrion_Backup_Core {
 
 			@unlink( $sql_tmp );
 
-			// Pokud už dnes záloha proběhla, přepsat ji stejným datem. Jinak jde o nový soubor.
+			// Pojistka pro nepravděpodobný případ dvou běhů ve stejnou sekundu.
 			if ( file_exists( $zip_path ) ) {
 				@unlink( $zip_path );
 			}
@@ -184,7 +198,19 @@ class Velrion_Backup_Core {
 					)
 				)
 			);
+
+			$result = 'success';
 		} catch ( Exception $e ) {
+			// Neúspěšný běh po sobě nechává rozpracovaný dump a .tmp archiv. Ty neodpovídají
+			// masce záloh, takže by je prune_old_backups() nikdy neuklidilo a postupně by
+			// zaplnily disk - a další zálohy by pak selhávaly na nedostatku místa.
+			if ( ! empty( $sql_tmp ) ) {
+				@unlink( $sql_tmp );
+			}
+			if ( ! empty( $zip_tmp ) ) {
+				@unlink( $zip_tmp );
+			}
+
 			self::set_state(
 				array_merge(
 					self::get_state(),
@@ -205,9 +231,13 @@ class Velrion_Backup_Core {
 					"Automatická záloha webu selhala.\n\nChyba: " . $e->getMessage() . "\nČas: " . gmdate( 'Y-m-d H:i:s' ) . " UTC"
 				);
 			}
+
+			$result = 'error';
 		}
 
 		delete_transient( VELRION_BACKUP_LOCK_KEY );
+
+		return $result;
 	}
 
 	/**
@@ -224,7 +254,7 @@ class Velrion_Backup_Core {
 			throw new Exception( 'Záložní adresář neexistuje.' );
 		}
 
-		$pattern = '/^' . preg_quote( self::FILE_PREFIX, '/' ) . '\d{4}-\d{2}-\d{2}' . preg_quote( self::FILE_SUFFIX, '/' ) . '$/';
+		$pattern = '/^' . preg_quote( self::FILE_PREFIX, '/' ) . self::FILE_STAMP_PATTERN . preg_quote( self::FILE_SUFFIX, '/' ) . '$/';
 		if ( ! preg_match( $pattern, basename( $filename ) ) ) {
 			throw new Exception( 'Neplatný název souboru zálohy.' );
 		}
