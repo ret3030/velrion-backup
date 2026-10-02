@@ -226,7 +226,7 @@ class Velrion_Backup_Admin {
 		} elseif ( Velrion_Backup::is_due() && $state['attempts'] && (int) $state['attempt_slot'] === Velrion_Backup::last_slot( $settings ) ) {
 			$t_auto = array( 'error', 'Selhává', 'Pokus ' . (int) $state['attempts'] . ' z ' . Velrion_Backup::MAX_ATTEMPTS . ', další při příštím spuštění cronu' );
 		} elseif ( Velrion_Backup::is_due() ) {
-			$t_auto = array( 'error', 'Po termínu', 'Čeká na spuštění cronu' );
+			$t_auto = array( 'error', 'Po termínu', 'ok' === $cron['level'] ? 'Proběhne při příštím spuštění cronu' : 'Cron neběží pravidelně - záloha se nespustí, dokud ho nenastavíte' );
 		} else {
 			$t_auto = array( 'ok', wp_date( 'j. n. Y H:i', Velrion_Backup::next_slot( $settings ) ), 'daily' === $settings['frequency'] ? 'Denně' : 'Každý týden' );
 		}
