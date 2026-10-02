@@ -907,7 +907,9 @@ class Velrion_Backup {
 	 */
 	public static function tick( $source ) {
 		$ping            = (array) get_option( self::OPT_PING, array() );
-		$ping[ $source ] = time();
+		$times           = self::pings( $source );
+		$times[]         = time();
+		$ping[ $source ] = array_slice( $times, -5 );
 		update_option( self::OPT_PING, $ping, false );
 
 		if ( ! self::is_due() ) {
@@ -965,38 +967,76 @@ class Velrion_Backup {
 		}
 	}
 
+	/** Časy posledních (max. 5) zavolání z daného zdroje, od nejstaršího. */
+	private static function pings( $source ) {
+		$ping = (array) get_option( self::OPT_PING, array() );
+		// Verze 2.0.0-2.0.1 ukládaly jen jedno číslo.
+		return isset( $ping[ $source ] ) ? array_map( 'intval', (array) $ping[ $source ] ) : array();
+	}
+
+	/** Zaznamená volání adresy cronu se špatným nebo chybějícím klíčem (např. useknutá URL). */
+	public static function record_rejected() {
+		$ping             = (array) get_option( self::OPT_PING, array() );
+		$ping['rejected'] = time();
+		update_option( self::OPT_PING, $ping, false );
+	}
+
+	/**
+	 * Běží zdroj pravidelně každou hodinu? Nestačí jedno zavolání (to může být i ruční
+	 * otevření adresy v prohlížeči) - poslední dvě musí být od sebe nejvýš hodinu a čtvrt
+	 * a to poslední nesmí být starší.
+	 */
+	private static function is_hourly( $times ) {
+		$limit = 75 * MINUTE_IN_SECONDS;
+		$count = count( $times );
+
+		return $count >= 2 && $times[ $count - 1 ] > time() - $limit && $times[ $count - 1 ] - $times[ $count - 2 ] <= $limit;
+	}
+
 	/**
 	 * Stav cronu pro status bar.
 	 *
 	 * @return array{level:string,label:string,detail:string}
 	 */
 	public static function cron_health() {
-		$ping   = (array) get_option( self::OPT_PING, array() );
-		$system = isset( $ping['system'] ) ? (int) $ping['system'] : 0;
-		$wp     = isset( $ping['wp-cron'] ) ? (int) $ping['wp-cron'] : 0;
-		$limit  = time() - 2 * HOUR_IN_SECONDS;
+		$system   = self::pings( 'system' );
+		$wp       = self::pings( 'wp-cron' );
+		$last_sys = $system ? max( $system ) : 0;
+		$last_wp  = $wp ? max( $wp ) : 0;
+		$ping     = (array) get_option( self::OPT_PING, array() );
+		$rejected = isset( $ping['rejected'] ) ? (int) $ping['rejected'] : 0;
 
-		if ( $system > $limit ) {
-			return array(
-				'level'  => 'ok',
-				'label'  => 'Běží (systémový cron)',
-				'detail' => 'Naposledy ' . self::ago( $system ),
-			);
-		}
-		if ( $wp > $limit ) {
-			return array(
-				'level'  => 'warn',
-				'label'  => 'Běží jen přes WP-Cron',
-				'detail' => 'Závisí na návštěvnosti - nastavte systémový cron',
-			);
+		if ( self::is_hourly( $system ) ) {
+			$health = array( 'ok', 'Běží (systémový cron)', 'Naposledy ' . self::when( $last_sys ) );
+		} elseif ( $last_sys > time() - 75 * MINUTE_IN_SECONDS ) {
+			$health = array( 'warn', 'Čeká na potvrzení', 'Volání ' . self::when( $last_sys ) . ' přijato - potvrdí ho další hodinové spuštění. Ruční otevření adresy se počítá také.' );
+		} elseif ( self::is_hourly( $wp ) ) {
+			$health = array( 'warn', 'Běží jen přes WP-Cron', 'Závisí na návštěvnosti - nastavte systémový cron' );
+		} elseif ( $last_sys ) {
+			$health = array( 'error', 'Neběží', 'Poslední volání ' . self::when( $last_sys ) . ', cron má volat každou hodinu' );
+		} else {
+			$health = array( 'error', 'Neběží', 'Systémový cron plugin zatím nikdy nezavolal' );
 		}
 
-		$last = max( $system, $wp );
+		if ( 'ok' !== $health[0] && $last_wp && ! self::is_hourly( $wp ) ) {
+			$health[2] .= '. WP-Cron naposledy ' . self::when( $last_wp ) . ' (nepravidelně)';
+		}
+
+		if ( $rejected > time() - DAY_IN_SECONDS && $rejected > $last_sys ) {
+			$health[0]  = 'ok' === $health[0] ? 'warn' : 'error';
+			$health[2] .='. POZOR: ' . self::when( $rejected ) . ' přišlo volání se špatným nebo chybějícím klíčem - zkontrolujte adresu v cronu (u příkazu wget musí být v uvozovkách)';
+		}
+
 		return array(
-			'level'  => 'error',
-			'label'  => 'Neběží',
-			'detail' => $last ? 'Naposledy ' . self::ago( $last ) : 'Zatím se nikdy nespustil',
+			'level'  => $health[0],
+			'label'  => $health[1],
+			'detail' => $health[2],
 		);
+	}
+
+	/** Přesný čas + kolik je to zpátky, např. "2. 10. 20:00 (před 2 hodiny)". */
+	public static function when( $time ) {
+		return wp_date( 'j. n. H:i', $time ) . ' (' . self::ago( $time ) . ')';
 	}
 
 	public static function ago( $time ) {
